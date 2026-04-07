@@ -6,10 +6,12 @@ const DAILY_LIMIT = 30;
 const STORAGE_KEY = "whatto_eat_daily";
 
 const CATEGORIES = [
-  { id: "all", label: "全部", emoji: "🍽️", type: "restaurant" },
-  { id: "cafe", label: "咖啡廳", emoji: "☕", type: "cafe" },
-  { id: "bakery", label: "甜點烘焙", emoji: "🍰", type: "bakery" },
-  { id: "bar", label: "酒吧", emoji: "🍺", type: "bar" },
+  { id: "all",        label: "全部",    emoji: "🍽️", types: ["restaurant", "cafe", "bakery", "meal_takeaway"] },
+  { id: "restaurant", label: "餐廳",    emoji: "🍴", types: ["restaurant"] },
+  { id: "cafe",       label: "咖啡廳",  emoji: "☕", types: ["cafe"] },
+  { id: "bakery",     label: "甜點烘焙",emoji: "🍰", types: ["bakery"] },
+  { id: "takeaway",   label: "外帶",    emoji: "🥡", types: ["meal_takeaway"] },
+  { id: "delivery",   label: "外送",    emoji: "🛵", types: ["meal_delivery"] },
 ];
 
 // ─── Rate limit helpers ───
@@ -87,20 +89,38 @@ export default function App() {
   const [radius, setRadius] = useState(1000);
   const [left, setLeft] = useState(remaining());
 
-  // ─── Google Places Nearby Search ───
-  const search = useCallback(async (lat, lng, type) => {
+  // ─── Google Places Nearby Search（支援多 type 並行搜尋並合併去重）───
+  const search = useCallback(async (lat, lng, types) => {
     if (!canSearch()) { setErr(`今日搜尋已達 ${DAILY_LIMIT} 次上限`); return; }
     setBusy(true); setErr("");
-    const qs = new URLSearchParams({
-      location: `${lat},${lng}`, radius: "2000",
-      type: type || "restaurant",
-      language: navigator.language || "zh-TW",
-    });
+    const typeList = Array.isArray(types) ? types : [types || "restaurant"];
     try {
-      const r = await fetch(`/api/places?${qs}`);
-      const d = await r.json();
-      if (d.status === "OK" && d.results) {
-        setList(d.results.map((p, i) => ({
+      // 對每個 type 發出平行請求
+      const responses = await Promise.all(typeList.map(type => {
+        const qs = new URLSearchParams({
+          location: `${lat},${lng}`, radius: "2000",
+          type,
+          language: navigator.language || "zh-TW",
+        });
+        return fetch(`/api/places?${qs}`).then(r => r.json());
+      }));
+
+      // 合併結果，以 place_id 去重
+      const seen = new Set();
+      const merged = [];
+      for (const d of responses) {
+        if (d.status === "OK" && d.results) {
+          for (const p of d.results) {
+            if (!seen.has(p.place_id)) {
+              seen.add(p.place_id);
+              merged.push(p);
+            }
+          }
+        }
+      }
+
+      if (merged.length > 0) {
+        setList(merged.map((p, i) => ({
           id: p.place_id || i,
           name: p.name,
           rating: p.rating || 0,
@@ -116,10 +136,11 @@ export default function App() {
           lng: p.geometry.location.lng,
         })));
         bumpRateLimit(); setLeft(remaining());
-      } else if (d.status === "ZERO_RESULTS") {
+      } else if (responses.every(d => d.status === "ZERO_RESULTS" || d.status === "OK")) {
         setList([]); setErr("附近找不到餐廳");
       } else {
-        setErr(`API 錯誤：${d.status}`);
+        const bad = responses.find(d => d.status !== "OK" && d.status !== "ZERO_RESULTS");
+        setErr(`API 錯誤：${bad?.status || "UNKNOWN"}`);
       }
     } catch (e) {
       setErr("無法連線 Google Places API");
@@ -137,7 +158,7 @@ export default function App() {
       pos => {
         const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setLoc(c); setLocBusy(false);
-        search(c.lat, c.lng, "restaurant");
+        search(c.lat, c.lng, ["restaurant", "cafe", "bakery", "meal_takeaway"]);
       },
       () => { setLocBusy(false); setErr("無法取得定位，請允許權限後重試"); },
       { enableHighAccuracy: true, timeout: 10000 },
@@ -150,7 +171,7 @@ export default function App() {
     setCat(id); setPick(null); setDone(false);
     if (loc) {
       const c = CATEGORIES.find(c => c.id === id);
-      search(loc.lat, loc.lng, c?.type || "restaurant");
+      search(loc.lat, loc.lng, c?.types || ["restaurant"]);
     }
   };
 
@@ -367,7 +388,7 @@ export default function App() {
       </section>}
 
       <footer style={{ textAlign: "center", padding: "32px 16px 0", fontSize: 11, color: "var(--dim)", position: "relative", zIndex: 1, opacity: .5 }}>
-        Powered by Google Places API・食べログ連結為站外搜尋<br />全球適用・在日本可搭配食べログ查看詳細評分
+        Powered by Google Places API・食べログ連結点站外搜尋<br />全球適用・在日本可搭配食べログ查看詳細評分
       </footer>
 
       <style>{`
