@@ -22,11 +22,18 @@ const DISTANCES = [
 const BUDGETS = [
   { label: "便宜", value: 1, symbol: "¥" },
   { label: "適中", value: 2, symbol: "¥¥" },
-  { label: "偏貴", value: 3, symbol: "¥¥¥" t�(��쁱����耋��c��h���م�Ք�а��嵉��耋
-�
-�
-�
-�����)t�()����ЁIQ�L��l(��쁱����耋��7�f@���م�Ք�����(��쁱����耈̸�����م�Ք�̸����(��쁱����耈̸Ԭ���م�Ք�̸ԁ��(��쁱����耈и�����م�Ք�и����(��쁱����耈иԬ���م�Ք�иԁ��)t�()// ─── Helpers ───
+  { label: "偏貴", value: 3, symbol: "¥¥¥" },
+];
+
+const RATINGS = [
+  { label: "不限", value: 0 },
+  { label: "3.0+", value: 3.0 },
+  { label: "3.5+", value: 3.5 },
+  { label: "4.0+", value: 4.0 },
+  { label: "4.5+", value: 4.5 },
+];
+
+// ─── Helpers ───
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000, toR = d => d * Math.PI / 180;
   const dLat = toR(lat2 - lat1), dLon = toR(lon2 - lon1);
@@ -63,7 +70,7 @@ export default function App() {
   // Filter states
   const [cuisine, setCuisine] = useState("all");
   const [radius, setRadius] = useState(1000);
-  const [budgets, setBudgets] = useState([]); // multi-select
+  const [budgets, setBudgets] = useState([]);
   const [minRating, setMinRating] = useState(0);
   const [openOnly, setOpenOnly] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
@@ -118,7 +125,7 @@ export default function App() {
     }).sort((a, b) => a.dist - b.dist);
   }, [withDist, radius, cuisine, budgets, minRating, openOnly]);
 
-  // cuisine counts (for filter tags)
+  // cuisine counts
   const cuisineCounts = useMemo(() => {
     const counts = {};
     withDist
@@ -133,7 +140,7 @@ export default function App() {
     return counts;
   }, [withDist, radius, budgets, minRating, openOnly]);
 
-  // cuisine label counts (for the filter panel tags)
+  // cuisine label counts
   const cuisineLabelCounts = useMemo(() => {
     const counts = {};
     withDist
@@ -224,7 +231,6 @@ export default function App() {
 
       {/* Distance + Filter Row */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
-        {/* Distance buttons */}
         <div style={{ display: "flex", gap: 6, flex: 1 }}>
           {DISTANCES.map(d => {
             const on = radius === d.value;
@@ -236,7 +242,6 @@ export default function App() {
             );
           })}
         </div>
-        {/* Filter button */}
         <button onClick={() => setShowFilter(true)}
           style={{ position: "relative", padding: "8px 14px", borderRadius: 40, border: activeFilters > 0 ? "2px solid var(--accent)" : "2px solid var(--sf2)", background: activeFilters > 0 ? "rgba(245,158,66,.15)" : "var(--sf)", color: activeFilters > 0 ? "var(--accent)" : "var(--dim)", fontWeight: 600, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
           ⚙️ 篩選
@@ -363,11 +368,8 @@ export default function App() {
       {/* ─── Filter Panel (Bottom Sheet) ─── */}
       {showFilter && (
         <>
-          {/* Overlay */}
           <div onClick={() => setShowFilter(false)} style={{ position: "fixed", inset: 0, zIndex: 10, background: "rgba(0,0,0,.6)", backdropFilter: "blur(2px)" }} />
-          {/* Sheet */}
           <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 11, background: "var(--sf)", borderRadius: "24px 24px 0 0", padding: "20px 20px 40px", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 -8px 40px rgba(0,0,0,.4)", animation: "slideUp .3s cubic-bezier(.17,.67,.21,1.05)" }}>
-            {/* Handle */}
             <div style={{ width: 40, height: 4, background: "var(--sf2)", borderRadius: 2, margin: "0 auto 20px" }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <h2 style={{ fontFamily: "var(--fd)", fontWeight: 700, fontSize: 20, margin: 0 }}>篩選</h2>
