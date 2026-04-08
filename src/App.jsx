@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { RESTAURANTS } from "./restaurants";
 
 // ─── Constants ───
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
+const DAILY_LIMIT = 30;
+const STORAGE_KEY = "whatto_eat_daily";
+
 const CUISINES = [
   { id: "all", label: "全部", emoji: "🍽️" },
   { id: "japanese", label: "日式", emoji: "🍱" },
@@ -10,6 +13,7 @@ const CUISINES = [
   { id: "italian", label: "義式", emoji: "🍝" },
   { id: "korean", label: "韓式", emoji: "🥘" },
   { id: "chinese", label: "中式", emoji: "🥟" },
+  { id: "cafe", label: "咖啡", emoji: "☕" },
   { id: "other", label: "其他", emoji: "🌏" },
 ];
 
@@ -20,9 +24,9 @@ const DISTANCES = [
 ];
 
 const BUDGETS = [
-  { label: "便宜", value: 1, symbol: "¥" },
-  { label: "適中", value: 2, symbol: "¥¥" },
-  { label: "偏貴", value: 3, symbol: "¥¥¥" },
+  { label: "便宜", value: 1, symbol: "$" },
+  { label: "適中", value: 2, symbol: "$$" },
+  { label: "偏貴", value: 3, symbol: "$$$" },
 ];
 
 const RATINGS = [
@@ -33,12 +37,63 @@ const RATINGS = [
   { label: "4.5+", value: 4.5 },
 ];
 
+// ─── Cuisine detection from Google Places types ───
+function detectCuisine(types, name) {
+  const hay = [...(types || []), (name || "")].join(" ").toLowerCase();
+  if (/japanese|sushi|ramen|izakaya|tempura|udon|soba|donburi|yakitori|tonkatsu|日本|壽司|拉麵|居酒屋/.test(hay)) return "japanese";
+  if (/taiwanese|bubble.?tea|boba|滷肉|牛肉麵|台[式灣]|小吃/.test(hay)) return "taiwanese";
+  if (/chinese|dim.?sum|hot.?pot|szechuan|cantonese|dumpling|中[式華]|火鍋|點心/.test(hay)) return "chinese";
+  if (/korean|kimchi|bibimbap|韓[式國]/.test(hay)) return "korean";
+  if (/american|burger|hamburger|steak|steakhouse|grill|美式/.test(hay)) return "american";
+  if (/italian|pizza|pasta|trattoria|risotto|義[式大]/.test(hay)) return "italian";
+  if (/cafe|coffee|咖啡/.test(hay)) return "cafe";
+  return "other";
+}
+
+function cuisineLabel(id) {
+  return CUISINES.find(c => c.id === id)?.label || "其他";
+}
+
+// ─── Rate limit helpers ───
+function getRateLimit() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { date: "", count: 0 };
+    return JSON.parse(raw);
+  } catch { return { date: "", count: 0 }; }
+}
+function bumpRateLimit() {
+  const today = new Date().toISOString().slice(0, 10);
+  const rl = getRateLimit();
+  const count = rl.date === today ? rl.count + 1 : 1;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, count })); } catch {}
+  return count;
+}
+function canSearch() {
+  const today = new Date().toISOString().slice(0, 10);
+  const rl = getRateLimit();
+  return rl.date !== today || rl.count < DAILY_LIMIT;
+}
+function remaining() {
+  const today = new Date().toISOString().slice(0, 10);
+  const rl = getRateLimit();
+  return rl.date === today ? Math.max(0, DAILY_LIMIT - rl.count) : DAILY_LIMIT;
+}
+
 // ─── Helpers ───
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000, toR = d => d * Math.PI / 180;
   const dLat = toR(lat2 - lat1), dLon = toR(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function tabelogUrl(name) {
+  return `https://tabelog.com/rstLst/?vs=1&sa=&sk=${encodeURIComponent(name)}`;
+}
+
+function photoSrc(ref, w = 120) {
+  return ref ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${w}&photoreference=${ref}&key=${API_KEY}` : null;
 }
 
 function Stars({ rating }) {
@@ -56,7 +111,7 @@ function PriceTag({ level }) {
   if (!level) return <span style={{ color: "var(--dim)" }}>—</span>;
   return (
     <span style={{ color: "var(--accent3)", fontSize: 12 }}>
-      {"¥".repeat(level)}<span style={{ opacity: 0.3 }}>{"¥".repeat(4 - level)}</span>
+      {"$".repeat(level)}<span style={{ opacity: 0.3 }}>{"$".repeat(4 - level)}</span>
     </span>
   );
 }
@@ -66,6 +121,9 @@ export default function App() {
   const [loc, setLoc] = useState(null);
   const [locBusy, setLocBusy] = useState(false);
   const [locErr, setLocErr] = useState("");
+  const [list, setList] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [left, setLeft] = useState(remaining());
 
   // Filter states
   const [cuisine, setCuisine] = useState("all");
@@ -81,6 +139,69 @@ export default function App() {
   const [done, setDone] = useState(false);
   const [hist, setHist] = useState([]);
 
+  // ─── Google Places Nearby Search ───
+  const search = useCallback(async (lat, lng) => {
+    if (!canSearch()) { setLocErr(`今日搜尋已達 ${DAILY_LIMIT} 次上限`); return; }
+    setBusy(true); setLocErr("");
+    const typeList = ["restaurant", "cafe", "bakery"];
+    try {
+      const responses = await Promise.all(typeList.map(type => {
+        const qs = new URLSearchParams({
+          location: `${lat},${lng}`, radius: "2000",
+          type,
+          language: navigator.language || "zh-TW",
+        });
+        return fetch(`/api/places?${qs}`).then(r => r.json());
+      }));
+
+      const seen = new Set();
+      const merged = [];
+      for (const d of responses) {
+        if (d.status === "OK" && d.results) {
+          for (const p of d.results) {
+            if (!seen.has(p.place_id)) {
+              seen.add(p.place_id);
+              merged.push(p);
+            }
+          }
+        }
+      }
+
+      if (merged.length > 0) {
+        setList(merged.map((p, i) => {
+          const cid = detectCuisine(p.types, p.name);
+          return {
+            id: p.place_id || i,
+            name: p.name,
+            rating: p.rating || 0,
+            reviews: p.user_ratings_total || 0,
+            dist: Math.round(haversine(lat, lng, p.geometry.location.lat, p.geometry.location.lng)),
+            priceLevel: p.price_level || 0,
+            address: p.vicinity || "",
+            open: p.opening_hours?.open_now,
+            openTxt: p.opening_hours ? (p.opening_hours.open_now ? "✅ 營業中" : "❌ 休息中") : "—",
+            photo: p.photos?.[0]?.photo_reference || null,
+            lat: p.geometry.location.lat,
+            lng: p.geometry.location.lng,
+            cuisine: cid,
+            cuisineLabel: cuisineLabel(cid),
+            tabelogUrl: tabelogUrl(p.name),
+          };
+        }));
+        bumpRateLimit();
+        setLeft(remaining());
+      } else if (responses.every(d => d.status === "ZERO_RESULTS" || d.status === "OK")) {
+        setList([]);
+        setLocErr("附近找不到餐廳");
+      } else {
+        const bad = responses.find(d => d.status !== "OK" && d.status !== "ZERO_RESULTS");
+        setLocErr(`API 錯誤：${bad?.status || "UNKNOWN"}`);
+      }
+    } catch (e) {
+      setLocErr("無法連線 Google Places API");
+    } finally { setBusy(false); }
+  }, []);
+
   // ─── Geolocation ───
   const locate = useCallback(() => {
     setLocBusy(true);
@@ -92,8 +213,10 @@ export default function App() {
     }
     navigator.geolocation.getCurrentPosition(
       pos => {
-        setLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setLoc(c);
         setLocBusy(false);
+        search(c.lat, c.lng);
       },
       () => {
         setLocBusy(false);
@@ -101,59 +224,45 @@ export default function App() {
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-  }, []);
+  }, [search]);
 
   useEffect(() => { locate(); }, [locate]);
 
-  // ─── Computed restaurants ───
-  const withDist = useMemo(() => {
-    if (!loc) return RESTAURANTS.map(r => ({ ...r, dist: 9999 }));
-    return RESTAURANTS.map(r => ({
-      ...r,
-      dist: Math.round(haversine(loc.lat, loc.lng, r.lat, r.lng)),
-    }));
-  }, [loc]);
-
+  // ─── Filtering (client side on already-fetched results) ───
   const filtered = useMemo(() => {
-    return withDist.filter(r => {
+    return list.filter(r => {
       if (r.dist > radius) return false;
       if (cuisine !== "all" && r.cuisine !== cuisine) return false;
-      if (budgets.length > 0 && !budgets.includes(r.priceLevel)) return false;
-      if (minRating > 0 && r.tabelogRating < minRating) return false;
+      if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
+      if (minRating > 0 && r.rating < minRating) return false;
       if (openOnly && !r.open) return false;
       return true;
     }).sort((a, b) => a.dist - b.dist);
-  }, [withDist, radius, cuisine, budgets, minRating, openOnly]);
+  }, [list, radius, cuisine, budgets, minRating, openOnly]);
 
-  // cuisine counts
+  // cuisine counts (within distance)
   const cuisineCounts = useMemo(() => {
     const counts = {};
-    withDist
-      .filter(r => {
-        if (r.dist > radius) return false;
-        if (budgets.length > 0 && !budgets.includes(r.priceLevel)) return false;
-        if (minRating > 0 && r.tabelogRating < minRating) return false;
-        if (openOnly && !r.open) return false;
-        return true;
-      })
-      .forEach(r => { counts[r.cuisine] = (counts[r.cuisine] || 0) + 1; });
+    list.filter(r => r.dist <= radius).forEach(r => {
+      counts[r.cuisine] = (counts[r.cuisine] || 0) + 1;
+    });
     return counts;
-  }, [withDist, radius, budgets, minRating, openOnly]);
+  }, [list, radius]);
 
-  // cuisine label counts
+  // cuisine label counts for filter panel
   const cuisineLabelCounts = useMemo(() => {
     const counts = {};
-    withDist
+    list
       .filter(r => {
         if (r.dist > radius) return false;
-        if (budgets.length > 0 && !budgets.includes(r.priceLevel)) return false;
-        if (minRating > 0 && r.tabelogRating < minRating) return false;
+        if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
+        if (minRating > 0 && r.rating < minRating) return false;
         if (openOnly && !r.open) return false;
         return true;
       })
       .forEach(r => { counts[r.cuisineLabel] = (counts[r.cuisineLabel] || 0) + 1; });
     return counts;
-  }, [withDist, radius, budgets, minRating, openOnly]);
+  }, [list, radius, budgets, minRating, openOnly]);
 
   // active filter count
   const activeFilters = (budgets.length > 0 ? 1 : 0) + (minRating > 0 ? 1 : 0) + (openOnly ? 1 : 0);
@@ -210,14 +319,18 @@ export default function App() {
           )}
         </p>
         {locErr && <p style={{ color: "var(--accent2)", fontSize: 12, margin: "4px 0 0" }}>⚠️ {locErr}</p>}
+        <p style={{ color: "var(--dim)", fontSize: 11, margin: "2px 0 0", opacity: .5 }}>今日剩餘搜尋：{left} / {DAILY_LIMIT}</p>
       </header>
+
+      {/* Loading */}
+      {busy && <div style={{ textAlign: "center", padding: 24, color: "var(--dim)" }}><span style={{ fontSize: 28, display: "inline-block", animation: "spin 1s linear infinite" }}>🔍</span><p style={{ margin: "8px 0 0", fontSize: 14 }}>搜尋附近餐廳中...</p></div>}
 
       {/* Cuisine Tabs */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 10 }}>
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, scrollbarWidth: "none" }}>
           {CUISINES.map(c => {
             const on = cuisine === c.id;
-            const count = c.id === "all" ? withDist.filter(r => r.dist <= radius).length : (cuisineCounts[c.id] || 0);
+            const count = c.id === "all" ? list.filter(r => r.dist <= radius).length : (cuisineCounts[c.id] || 0);
             return (
               <button key={c.id} onClick={() => { setCuisine(c.id); setPick(null); setDone(false); }}
                 style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", borderRadius: 40, border: on ? "2px solid var(--accent)" : "2px solid transparent", background: on ? "rgba(245,158,66,.15)" : "var(--sf)", color: on ? "var(--accent)" : "var(--dim)", fontFamily: "var(--fb)", fontWeight: 600, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap", transition: "all .2s" }}>
@@ -266,25 +379,36 @@ export default function App() {
             <div style={{ textAlign: "center" }}>
               <div style={{ fontSize: 40, marginBottom: 8 }}>🎲</div>
               <p style={{ color: "var(--dim)", fontSize: 14, margin: 0 }}>
-                {filtered.length > 0 ? `共 ${filtered.length} 間餐廳，按下面按鈕隨機挑選！` : "沒有符合條件的餐廳"}
+                {filtered.length > 0 ? `共 ${filtered.length} 間餐廳，按下面按鈕隨機挑選！` : busy ? "搜尋中..." : "沒有符合條件的餐廳"}
               </p>
             </div>
           )}
 
           {pick && (
             <div style={{ textAlign: "center", width: "100%", animation: spinning ? "tick .1s" : done ? "popIn .5s cubic-bezier(.17,.67,.21,1.25)" : "none" }}>
-              <div style={{ fontSize: 48, marginBottom: 8, filter: spinning ? "blur(1px)" : "none" }}>
-                {CUISINES.find(c => c.id === pick.cuisine)?.emoji || "🍴"}
-              </div>
+              {pick.photo && !spinning ? (
+                <div style={{ width: 80, height: 80, borderRadius: 16, overflow: "hidden", margin: "0 auto 10px", boxShadow: "0 4px 16px rgba(0,0,0,.3)" }}>
+                  <img src={photoSrc(pick.photo, 200)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+              ) : (
+                <div style={{ fontSize: 48, marginBottom: 8, filter: spinning ? "blur(1px)" : "none" }}>
+                  {CUISINES.find(c => c.id === pick.cuisine)?.emoji || "🍴"}
+                </div>
+              )}
               <h2 style={{ fontFamily: "var(--fd)", fontWeight: 700, fontSize: done ? 22 : 20, margin: "0 0 4px", color: done ? "var(--accent)" : "var(--tx)" }}>{pick.name}</h2>
               {done && (
                 <div style={{ animation: "fadeUp .4s ease .2s both" }}>
-                  <Stars rating={pick.tabelogRating} />
-                  {pick.tabelogReviews > 0 && <span style={{ color: "var(--dim)", fontSize: 11, marginLeft: 4 }}>({pick.tabelogReviews} 則)</span>}
+                  <Stars rating={pick.rating} />
+                  {pick.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 11, marginLeft: 4 }}>({pick.reviews} 則)</span>}
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: "rgba(93,228,167,.1)", color: "var(--accent3)", border: "1px solid rgba(93,228,167,.2)" }}>
+                      {CUISINES.find(c => c.id === pick.cuisine)?.emoji} {pick.cuisineLabel}
+                    </span>
+                  </div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 8, fontSize: 13, color: "var(--dim)", flexWrap: "wrap" }}>
                     <span>📍 {pick.dist}m</span>
                     <PriceTag level={pick.priceLevel} />
-                    <span>{pick.open ? "✅ 營業中" : "❌ 休息中"}</span>
+                    <span>{pick.openTxt}</span>
                   </div>
                   <p style={{ fontSize: 12, color: "var(--dim)", margin: "6px 0 10px" }}>{pick.address}</p>
                   <a href={pick.tabelogUrl} target="_blank" rel="noopener noreferrer"
@@ -297,8 +421,8 @@ export default function App() {
           )}
         </div>
 
-        <button onClick={spin} disabled={!filtered.length || spinning}
-          style={{ marginTop: 20, width: 220, height: 56, borderRadius: 60, border: "none", background: spinning ? "var(--sf2)" : "linear-gradient(135deg,var(--accent),var(--accent2))", color: spinning ? "var(--dim)" : "#fff", fontFamily: "var(--fd)", fontWeight: 700, fontSize: 18, cursor: !filtered.length || spinning ? "not-allowed" : "pointer", boxShadow: spinning ? "none" : "0 6px 30px rgba(245,158,66,.3)", transition: "all .3s", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transform: spinning ? "scale(.96)" : "scale(1)", opacity: !filtered.length ? .4 : 1 }}>
+        <button onClick={spin} disabled={!filtered.length || spinning || busy}
+          style={{ marginTop: 20, width: 220, height: 56, borderRadius: 60, border: "none", background: spinning ? "var(--sf2)" : "linear-gradient(135deg,var(--accent),var(--accent2))", color: spinning ? "var(--dim)" : "#fff", fontFamily: "var(--fd)", fontWeight: 700, fontSize: 18, cursor: !filtered.length || spinning || busy ? "not-allowed" : "pointer", boxShadow: spinning ? "none" : "0 6px 30px rgba(245,158,66,.3)", transition: "all .3s", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transform: spinning ? "scale(.96)" : "scale(1)", opacity: !filtered.length || busy ? .4 : 1 }}>
           {spinning ? <><span style={{ animation: "spin .6s linear infinite", display: "inline-block" }}>🎰</span> 選擇中...</> : <>🎲 隨機挑選！</>}
         </button>
         {done && (
@@ -314,27 +438,33 @@ export default function App() {
           附近餐廳 ({filtered.length})
         </h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {!filtered.length && (
+          {!busy && !filtered.length && (
             <div style={{ textAlign: "center", padding: 32, color: "var(--dim)", fontSize: 14, background: "var(--sf)", borderRadius: "var(--r)" }}>
               沒有符合條件的餐廳 😢
             </div>
           )}
           {filtered.map((r, i) => (
             <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, background: pick?.id === r.id && done ? "rgba(245,158,66,.1)" : "var(--sf)", borderRadius: 14, padding: "12px 14px", border: pick?.id === r.id && done ? "1.5px solid var(--accent)" : "1.5px solid transparent", animation: `fadeUp .35s ease ${i * .03}s both` }}>
-              <div style={{ fontSize: 28, width: 52, height: 52, background: "var(--sf2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                {CUISINES.find(c => c.id === r.cuisine)?.emoji || "🍴"}
-              </div>
+              {r.photo ? (
+                <div style={{ width: 52, height: 52, borderRadius: 12, overflow: "hidden", flexShrink: 0, background: "var(--sf2)" }}>
+                  <img src={photoSrc(r.photo)} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+              ) : (
+                <div style={{ fontSize: 28, width: 52, height: 52, background: "var(--sf2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {CUISINES.find(c => c.id === r.cuisine)?.emoji || "🍴"}
+                </div>
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
                 <div style={{ fontSize: 11, color: "var(--accent3)", marginTop: 1 }}>{r.cuisineLabel}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-                  <Stars rating={r.tabelogRating} />
-                  {r.tabelogReviews > 0 && <span style={{ color: "var(--dim)", fontSize: 10 }}>({r.tabelogReviews})</span>}
+                  <Stars rating={r.rating} />
+                  {r.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 10 }}>({r.reviews})</span>}
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 11, color: "var(--dim)", alignItems: "center" }}>
                   <span>{r.dist}m</span>
                   <PriceTag level={r.priceLevel} />
-                  <span>{r.open ? "✅ 營業中" : "❌ 休息中"}</span>
+                  <span>{r.openTxt}</span>
                 </div>
               </div>
               <a href={r.tabelogUrl} target="_blank" rel="noopener noreferrer"
@@ -362,7 +492,7 @@ export default function App() {
       )}
 
       <footer style={{ textAlign: "center", padding: "32px 16px 0", fontSize: 11, color: "var(--dim)", position: "relative", zIndex: 1, opacity: .5 }}>
-        資料來源：食べログ（Tabelog）・只顯示已在食べログ登錄的餐廳
+        Powered by Google Places API・食べログ連結為站外搜尋
       </footer>
 
       {/* ─── Filter Panel (Bottom Sheet) ─── */}
