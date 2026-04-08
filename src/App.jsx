@@ -42,23 +42,25 @@ const RATINGS = [
 ];
 
 // ─── Food type detection from name + Google Places types ───
+// IMPORTANT: order matters! More specific matches must come before generic ones.
+// e.g. "麵包" (bread) must be checked BEFORE "麵" (noodle), otherwise bakeries get misclassified.
 function detectFoodType(types, name) {
   const hay = [...(types || []), (name || "")].join(" ").toLowerCase();
 
-  // Rice dishes
-  if (/丼|どんぶり|donburi|curry|カレー|咖哩|咖喱|飯|rice|便當|bento|定食|燴飯|炒飯|fried rice|雞腿飯|排骨飯|魯肉飯|滷肉飯|燒臘/.test(hay)) return "rice";
+  // Bakery & dessert — MUST be before noodle check (麵包 contains 麵)
+  if (/bakery|甜點|dessert|蛋糕|cake|pastry|麵包|bread|パン|甜品|鬆餅|waffle|pancake|donut|冰淇淋|ice.?cream|gelato/.test(hay)) return "bread";
 
-  // Noodles
-  if (/麵|拉麵|ramen|noodle|うどん|udon|soba|蕎麥|pasta|義大利麵|牛肉麵|擔仔|陽春|乾麵|炒麵|湯麵|米粉|河粉|粿條|pho|phở/.test(hay)) return "noodle";
+  // Cafe & coffee — also before noodle (some cafes have 麵 in menu items)
+  if (/cafe|coffee|咖啡|カフェ|コーヒー|tea.?house|茶[館室]/.test(hay)) return "cafe";
 
   // Burger
   if (/burger|hamburger|漢堡|ハンバーガー/.test(hay)) return "burger";
 
+  // Pizza
+  if (/pizza|披薩|比薩|ピザ/.test(hay)) return "pizza";
+
   // Sushi & raw fish
   if (/sushi|壽司|すし|鮨|sashimi|刺身|生魚|海鮮丼/.test(hay)) return "sushi";
-
-  // BBQ & grill
-  if (/bbq|barbecue|grill|燒烤|烤肉|焼肉|燒鳥|yakitori|串燒|串烤|炭火|steakhouse|steak|牛排/.test(hay)) return "bbq";
 
   // Hot pot & stew
   if (/火鍋|hot.?pot|鍋物|涮涮|しゃぶ|shabu|sukiyaki|壽喜燒|麻辣鍋|鴛鴦|石頭鍋|薑母鴨|羊肉爐/.test(hay)) return "hotpot";
@@ -66,14 +68,14 @@ function detectFoodType(types, name) {
   // Dumplings & buns
   if (/餃子|dumpling|gyoza|包子|小籠|湯包|水餃|鍋貼|蒸餃|dim.?sum|點心/.test(hay)) return "dumpling";
 
-  // Pizza
-  if (/pizza|披薩|比薩|ピザ/.test(hay)) return "pizza";
+  // BBQ & grill
+  if (/bbq|barbecue|grill|燒烤|烤肉|焼肉|燒鳥|yakitori|串燒|串烤|炭火|steakhouse|steak|牛排/.test(hay)) return "bbq";
 
-  // Bakery & dessert
-  if (/bakery|甜點|dessert|蛋糕|cake|pastry|麵包|bread|パン|甜品|鬆餅|waffle|pancake|donut|冰淇淋|ice.?cream|gelato/.test(hay)) return "bread";
+  // Noodles — after bakery/cafe so 麵包 and cafe don't get caught
+  if (/拉麵|ramen|noodle|うどん|udon|soba|蕎麥|pasta|義大利麵|牛肉麵|擔仔|陽春麵|乾麵|炒麵|湯麵|米粉|河粉|粿條|pho|phở|麵線|麵店|麵屋|麵館/.test(hay)) return "noodle";
 
-  // Cafe & coffee
-  if (/cafe|coffee|咖啡|カフェ|コーヒー|tea.?house|茶[館室]/.test(hay)) return "cafe";
+  // Rice dishes — broad match, so put near end
+  if (/丼|どんぶり|donburi|curry|カレー|咖哩|咖喱|飯|rice|便當|bento|定食|燴飯|炒飯|fried rice|雞腿飯|排骨飯|魯肉飯|滷肉飯|燒臘/.test(hay)) return "rice";
 
   return "other";
 }
