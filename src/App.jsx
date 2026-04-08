@@ -1,25 +1,18 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 
 // ─── Constants ───
 const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
 const DAILY_LIMIT = 30;
 const STORAGE_KEY = "whatto_eat_daily";
 
-// Food-type based categories (not nationality)
-const FOOD_TYPES = [
-  { id: "all",      label: "全部",     emoji: "🍽️" },
-  { id: "rice",     label: "飯類",     emoji: "🍚" },
-  { id: "noodle",   label: "麵類",     emoji: "🍜" },
-  { id: "burger",   label: "漢堡",     emoji: "🍔" },
-  { id: "sushi",    label: "壽司/生魚", emoji: "🍣" },
-  { id: "bbq",      label: "燒烤",     emoji: "🥩" },
-  { id: "hotpot",   label: "鍋物",     emoji: "🍲" },
-  { id: "dumpling", label: "餃子/包子", emoji: "🥟" },
-  { id: "pizza",    label: "披薩",     emoji: "🍕" },
-  { id: "bread",    label: "麵包/甜點", emoji: "🍰" },
-  { id: "cafe",     label: "咖啡",     emoji: "☕" },
-  { id: "other",    label: "其他",     emoji: "🍴" },
+const CATEGORY_TABS = [
+  { id: "all",        label: "全部",     emoji: "🍽️", types: ["restaurant", "cafe", "bakery"] },
+  { id: "restaurant", label: "餐廳",     emoji: "🍴", types: ["restaurant"] },
+  { id: "cafe",       label: "咖啡廳",   emoji: "☕", types: ["cafe"] },
+  { id: "bakery",     label: "甜點麵包", emoji: "🍰", types: ["bakery"] },
 ];
+
+const KEYWORD_SUGGESTIONS = ["拉麵", "漢堡", "咖哩", "壽司", "火鍋", "披薩", "牛排", "早午餐", "素食", "甜點"];
 
 const DISTANCES = [
   { label: "500m", value: 500 },
@@ -41,63 +34,7 @@ const RATINGS = [
   { label: "4.5+", value: 4.5 },
 ];
 
-// ─── Food type detection from name + Google Places types ───
-// IMPORTANT: order matters! More specific matches must come before generic ones.
-// e.g. "麵包" (bread) must be checked BEFORE "麵" (noodle), otherwise bakeries get misclassified.
-function detectFoodType(types, name) {
-  const hay = [...(types || []), (name || "")].join(" ").toLowerCase();
-
-  // Bakery & dessert — MUST be before noodle check (麵包 contains 麵)
-  if (/bakery|甜點|dessert|蛋糕|cake|pastry|麵包|bread|パン|甜品|鬆餅|waffle|pancake|donut|冰淇淋|ice.?cream|gelato/.test(hay)) return "bread";
-
-  // Cafe & coffee — also before noodle (some cafes have 麵 in menu items)
-  if (/cafe|coffee|咖啡|カフェ|コーヒー|tea.?house|茶[館室]/.test(hay)) return "cafe";
-
-  // Burger
-  if (/burger|hamburger|漢堡|ハンバーガー/.test(hay)) return "burger";
-
-  // Pizza
-  if (/pizza|披薩|比薩|ピザ/.test(hay)) return "pizza";
-
-  // Sushi & raw fish
-  if (/sushi|壽司|すし|鮨|sashimi|刺身|生魚|海鮮丼/.test(hay)) return "sushi";
-
-  // Hot pot & stew
-  if (/火鍋|hot.?pot|鍋物|涮涮|しゃぶ|shabu|sukiyaki|壽喜燒|麻辣鍋|鴛鴦|石頭鍋|薑母鴨|羊肉爐/.test(hay)) return "hotpot";
-
-  // Dumplings & buns
-  if (/餃子|dumpling|gyoza|包子|小籠|湯包|水餃|鍋貼|蒸餃|dim.?sum|點心/.test(hay)) return "dumpling";
-
-  // BBQ & grill
-  if (/bbq|barbecue|grill|燒烤|烤肉|焼肉|燒鳥|yakitori|串燒|串烤|炭火|steakhouse|steak|牛排/.test(hay)) return "bbq";
-
-  // Noodles — after bakery/cafe so 麵包 and cafe don't get caught
-  if (/拉麵|ramen|noodle|うどん|udon|soba|蕎麥|pasta|義大利麵|牛肉麵|擔仔|陽春麵|乾麵|炒麵|湯麵|米粉|河粉|粿條|pho|phở|麵線|麵店|麵屋|麵館/.test(hay)) return "noodle";
-
-  // Rice dishes — broad match, so put near end
-  if (/丼|どんぶり|donburi|curry|カレー|咖哩|咖喱|飯|rice|便當|bento|定食|燴飯|炒飯|fried rice|雞腿飯|排骨飯|魯肉飯|滷肉飯|燒臘/.test(hay)) return "rice";
-
-  return "other";
-}
-
-function foodTypeLabel(id) {
-  return FOOD_TYPES.find(c => c.id === id)?.label || "其他";
-}
-
-function foodTypeEmoji(id) {
-  return FOOD_TYPES.find(c => c.id === id)?.emoji || "🍴";
-}
-
-// ─── Is the restaurant in Japan? (rough bounding box) ───
-function isInJapan(lat, lng) {
-  return lat >= 24 && lat <= 46 && lng >= 122 && lng <= 146;
-}
-
-function tabelogSearchUrl(name) {
-  return `https://tabelog.com/rstLst/?vs=1&sa=&sk=${encodeURIComponent(name)}`;
-}
-
-// ─── Rate limit helpers ───
+// ─── Helpers ───
 function getRateLimit() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -123,12 +60,19 @@ function remaining() {
   return rl.date === today ? Math.max(0, DAILY_LIMIT - rl.count) : DAILY_LIMIT;
 }
 
-// ─── Helpers ───
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371000, toR = d => d * Math.PI / 180;
   const dLat = toR(lat2 - lat1), dLon = toR(lon2 - lon1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isInJapan(lat, lng) {
+  return lat >= 24 && lat <= 46 && lng >= 122 && lng <= 146;
+}
+
+function tabelogSearchUrl(name) {
+  return `https://tabelog.com/rstLst/?vs=1&sa=&sk=${encodeURIComponent(name)}`;
 }
 
 function gmapUrl(name, lat, lng) {
@@ -137,6 +81,16 @@ function gmapUrl(name, lat, lng) {
 
 function photoSrc(ref, w = 120) {
   return ref ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${w}&photoreference=${ref}&key=${API_KEY}` : null;
+}
+
+function deriveCategoryFromTypes(googleTypes) {
+  if (googleTypes?.includes("bakery")) return "bakery";
+  if (googleTypes?.includes("cafe")) return "cafe";
+  return "restaurant";
+}
+
+function categoryEmoji(catId) {
+  return CATEGORY_TABS.find(c => c.id === catId)?.emoji || "🍴";
 }
 
 function Stars({ rating }) {
@@ -168,8 +122,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [left, setLeft] = useState(remaining());
 
-  // Filter states
-  const [foodType, setFoodType] = useState("all");
+  // Search & filter states
+  const [keyword, setKeyword] = useState("");
+  const [activeKeyword, setActiveKeyword] = useState("");
+  const [category, setCategory] = useState("all");
   const [radius, setRadius] = useState(1000);
   const [budgets, setBudgets] = useState([]);
   const [minRating, setMinRating] = useState(0);
@@ -182,20 +138,44 @@ export default function App() {
   const [done, setDone] = useState(false);
   const [hist, setHist] = useState([]);
 
+  const inputRef = useRef(null);
+
   // ─── Google Places Nearby Search ───
-  const search = useCallback(async (lat, lng) => {
+  const search = useCallback(async (lat, lng, categoryId = "all", keywordStr = "") => {
     if (!canSearch()) { setLocErr(`今日搜尋已達 ${DAILY_LIMIT} 次上限`); return; }
     setBusy(true); setLocErr("");
-    const typeList = ["restaurant", "cafe", "bakery"];
+    setPick(null); setDone(false);
+
+    const tab = CATEGORY_TABS.find(t => t.id === categoryId) || CATEGORY_TABS[0];
+
     try {
-      const responses = await Promise.all(typeList.map(type => {
+      let fetches;
+      if (keywordStr) {
+        // Keyword search: single API call
         const qs = new URLSearchParams({
-          location: `${lat},${lng}`, radius: "2000",
-          type,
+          location: `${lat},${lng}`,
+          radius: "2000",
+          keyword: keywordStr,
           language: navigator.language || "zh-TW",
         });
-        return fetch(`/api/places?${qs}`).then(r => r.json());
-      }));
+        if (categoryId !== "all") {
+          qs.set("type", tab.types[0]);
+        }
+        fetches = [fetch(`/api/places?${qs}`).then(r => r.json())];
+      } else {
+        // No keyword: query each type in the category
+        fetches = tab.types.map(type => {
+          const qs = new URLSearchParams({
+            location: `${lat},${lng}`,
+            radius: "2000",
+            type,
+            language: navigator.language || "zh-TW",
+          });
+          return fetch(`/api/places?${qs}`).then(r => r.json());
+        });
+      }
+
+      const responses = await Promise.all(fetches);
 
       const seen = new Set();
       const merged = [];
@@ -212,9 +192,9 @@ export default function App() {
 
       if (merged.length > 0) {
         setList(merged.map((p, i) => {
-          const ft = detectFoodType(p.types, p.name);
           const pLat = p.geometry.location.lat;
           const pLng = p.geometry.location.lng;
+          const cat = deriveCategoryFromTypes(p.types);
           return {
             id: p.place_id || i,
             name: p.name,
@@ -228,20 +208,24 @@ export default function App() {
             photo: p.photos?.[0]?.photo_reference || null,
             lat: pLat,
             lng: pLng,
-            foodType: ft,
-            foodTypeLabel: foodTypeLabel(ft),
+            category: cat,
             inJapan: isInJapan(pLat, pLng),
           };
         }));
-        bumpRateLimit();
-        setLeft(remaining());
       } else if (responses.every(d => d.status === "ZERO_RESULTS" || d.status === "OK")) {
         setList([]);
-        setLocErr("附近找不到餐廳");
+        if (keywordStr) {
+          setLocErr(`找不到「${keywordStr}」的相關餐廳`);
+        } else {
+          setLocErr("附近找不到餐廳");
+        }
       } else {
         const bad = responses.find(d => d.status !== "OK" && d.status !== "ZERO_RESULTS");
         setLocErr(`API 錯誤：${bad?.status || "UNKNOWN"}`);
       }
+
+      bumpRateLimit();
+      setLeft(remaining());
     } catch (e) {
       setLocErr("無法連線 Google Places API");
     } finally { setBusy(false); }
@@ -261,7 +245,7 @@ export default function App() {
         const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setLoc(c);
         setLocBusy(false);
-        search(c.lat, c.lng);
+        search(c.lat, c.lng, "all", "");
       },
       () => {
         setLocBusy(false);
@@ -273,41 +257,43 @@ export default function App() {
 
   useEffect(() => { locate(); }, [locate]);
 
-  // ─── Filtering ───
+  // ─── Search handlers ───
+  const handleKeywordSearch = useCallback((kw) => {
+    const trimmed = (kw || "").trim();
+    setActiveKeyword(trimmed);
+    setKeyword(trimmed);
+    if (loc) {
+      search(loc.lat, loc.lng, category, trimmed);
+    }
+    inputRef.current?.blur();
+  }, [loc, category, search]);
+
+  const handleClearKeyword = useCallback(() => {
+    setActiveKeyword("");
+    setKeyword("");
+    if (loc) {
+      search(loc.lat, loc.lng, category, "");
+    }
+  }, [loc, category, search]);
+
+  const handleCategoryChange = useCallback((catId) => {
+    setCategory(catId);
+    if (loc) {
+      search(loc.lat, loc.lng, catId, activeKeyword);
+    }
+  }, [loc, activeKeyword, search]);
+
+  // ─── Filtering (local, on already-fetched results) ───
   const filtered = useMemo(() => {
     return list.filter(r => {
       if (r.dist > radius) return false;
-      if (foodType !== "all" && r.foodType !== foodType) return false;
+      if (category !== "all" && r.category !== category) return false;
       if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
       if (minRating > 0 && r.rating < minRating) return false;
       if (openOnly && !r.open) return false;
       return true;
     }).sort((a, b) => a.dist - b.dist);
-  }, [list, radius, foodType, budgets, minRating, openOnly]);
-
-  // food type counts (within distance)
-  const foodTypeCounts = useMemo(() => {
-    const counts = {};
-    list.filter(r => r.dist <= radius).forEach(r => {
-      counts[r.foodType] = (counts[r.foodType] || 0) + 1;
-    });
-    return counts;
-  }, [list, radius]);
-
-  // food type label counts for filter panel
-  const foodTypeLabelCounts = useMemo(() => {
-    const counts = {};
-    list
-      .filter(r => {
-        if (r.dist > radius) return false;
-        if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
-        if (minRating > 0 && r.rating < minRating) return false;
-        if (openOnly && !r.open) return false;
-        return true;
-      })
-      .forEach(r => { counts[r.foodTypeLabel] = (counts[r.foodTypeLabel] || 0) + 1; });
-    return counts;
-  }, [list, radius, budgets, minRating, openOnly]);
+  }, [list, radius, category, budgets, minRating, openOnly]);
 
   // active filter count
   const activeFilters = (budgets.length > 0 ? 1 : 0) + (minRating > 0 ? 1 : 0) + (openOnly ? 1 : 0);
@@ -370,25 +356,101 @@ export default function App() {
       {/* Loading */}
       {busy && <div style={{ textAlign: "center", padding: 24, color: "var(--dim)" }}><span style={{ fontSize: 28, display: "inline-block", animation: "spin 1s linear infinite" }}>🔍</span><p style={{ margin: "8px 0 0", fontSize: 14 }}>搜尋附近餐廳中...</p></div>}
 
-      {/* Food Type Tabs */}
+      {/* ═══ Search Box ═══ */}
+      <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 8 }}>
+        <form onSubmit={e => { e.preventDefault(); handleKeywordSearch(keyword); }}
+          style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ flex: 1, position: "relative" }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={keyword}
+              onChange={e => setKeyword(e.target.value)}
+              placeholder="搜尋想吃的... 拉麵、漢堡、curry"
+              style={{
+                width: "100%", padding: "11px 16px", paddingRight: activeKeyword ? 36 : 16,
+                borderRadius: 40, border: "2px solid var(--sf2)", background: "var(--sf)",
+                color: "var(--tx)", fontFamily: "var(--fb)", fontSize: 14, outline: "none",
+                transition: "border-color .2s",
+              }}
+              onFocus={e => e.target.style.borderColor = "var(--accent)"}
+              onBlur={e => e.target.style.borderColor = "var(--sf2)"}
+            />
+            {activeKeyword && (
+              <button type="button" onClick={handleClearKeyword}
+                style={{
+                  position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "var(--sf2)", border: "none", color: "var(--dim)",
+                  width: 22, height: 22, borderRadius: "50%", fontSize: 12,
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                }}>✕</button>
+            )}
+          </div>
+          <button type="submit" disabled={busy}
+            style={{
+              width: 44, height: 44, borderRadius: "50%", border: "none", flexShrink: 0,
+              background: "linear-gradient(135deg,var(--accent),var(--accent2))",
+              color: "#fff", fontSize: 18, cursor: busy ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              opacity: busy ? .5 : 1, transition: "opacity .2s",
+            }}>🔍</button>
+        </form>
+
+        {/* Active keyword indicator */}
+        {activeKeyword && !busy && (
+          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "4px 12px", borderRadius: 20,
+              background: "rgba(245,158,66,.15)", border: "1.5px solid var(--accent)",
+              color: "var(--accent)", fontSize: 12, fontWeight: 600,
+            }}>
+              🔍 搜尋: 「{activeKeyword}」
+              <span onClick={handleClearKeyword} style={{ cursor: "pointer", opacity: .7, fontSize: 10 }}>✕ 清除</span>
+            </span>
+            <span style={{ color: "var(--dim)", fontSize: 11 }}>{filtered.length} 間</span>
+          </div>
+        )}
+      </section>
+
+      {/* ═══ Keyword Suggestion Chips ═══ */}
+      <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
+          {KEYWORD_SUGGESTIONS.map(kw => (
+            <button key={kw} onClick={() => { setKeyword(kw); handleKeywordSearch(kw); }}
+              disabled={busy}
+              style={{
+                flex: "0 0 auto", padding: "5px 12px", borderRadius: 20,
+                border: activeKeyword === kw ? "1.5px solid var(--accent)" : "1.5px solid var(--sf2)",
+                background: activeKeyword === kw ? "rgba(245,158,66,.12)" : "transparent",
+                color: activeKeyword === kw ? "var(--accent)" : "var(--dim)",
+                fontFamily: "var(--fb)", fontWeight: 500, fontSize: 12,
+                cursor: busy ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                opacity: busy ? .5 : 1, transition: "all .15s",
+              }}>
+              {kw}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* ═══ Category Tabs ═══ */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 10 }}>
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, scrollbarWidth: "none" }}>
-          {FOOD_TYPES.map(c => {
-            const on = foodType === c.id;
-            const count = c.id === "all" ? list.filter(r => r.dist <= radius).length : (foodTypeCounts[c.id] || 0);
-            if (c.id !== "all" && count === 0) return null;
+          {CATEGORY_TABS.map(c => {
+            const on = category === c.id;
             return (
-              <button key={c.id} onClick={() => { setFoodType(c.id); setPick(null); setDone(false); }}
-                style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", borderRadius: 40, border: on ? "2px solid var(--accent)" : "2px solid transparent", background: on ? "rgba(245,158,66,.15)" : "var(--sf)", color: on ? "var(--accent)" : "var(--dim)", fontFamily: "var(--fb)", fontWeight: 600, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap", transition: "all .2s" }}>
+              <button key={c.id} onClick={() => handleCategoryChange(c.id)}
+                disabled={busy}
+                style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", borderRadius: 40, border: on ? "2px solid var(--accent)" : "2px solid transparent", background: on ? "rgba(245,158,66,.15)" : "var(--sf)", color: on ? "var(--accent)" : "var(--dim)", fontFamily: "var(--fb)", fontWeight: 600, fontSize: 13, cursor: busy ? "not-allowed" : "pointer", whiteSpace: "nowrap", opacity: busy ? .5 : 1, transition: "all .2s" }}>
                 <span style={{ fontSize: 15 }}>{c.emoji}</span>{c.label}
-                {count > 0 && <span style={{ fontSize: 10, opacity: 0.7, background: on ? "rgba(245,158,66,.2)" : "var(--sf2)", borderRadius: 10, padding: "1px 5px" }}>{count}</span>}
               </button>
             );
           })}
         </div>
       </section>
 
-      {/* Distance + Filter Row */}
+      {/* ═══ Distance + Filter Row ═══ */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ display: "flex", gap: 6, flex: 1 }}>
           {DISTANCES.map(d => {
@@ -410,7 +472,7 @@ export default function App() {
         </button>
       </section>
 
-      {/* Spin Zone */}
+      {/* ═══ Spin Zone ═══ */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 24, display: "flex", flexDirection: "column", alignItems: "center" }}>
         <div style={{ width: "100%", maxWidth: 400, minHeight: 180, background: done ? "linear-gradient(145deg,rgba(245,158,66,.12),rgba(255,107,107,.08))" : "var(--sf)", borderRadius: "var(--r)", border: done ? "2px solid var(--accent)" : "2px solid var(--sf2)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, transition: "all .4s", boxShadow: done ? "0 0 40px rgba(245,158,66,.15)" : "none", position: "relative", overflow: "hidden" }}>
           {done && (
@@ -438,7 +500,7 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 48, marginBottom: 8, filter: spinning ? "blur(1px)" : "none" }}>
-                  {foodTypeEmoji(pick.foodType)}
+                  {categoryEmoji(pick.category)}
                 </div>
               )}
               <h2 style={{ fontFamily: "var(--fd)", fontWeight: 700, fontSize: done ? 22 : 20, margin: "0 0 4px", color: done ? "var(--accent)" : "var(--tx)" }}>{pick.name}</h2>
@@ -446,11 +508,6 @@ export default function App() {
                 <div style={{ animation: "fadeUp .4s ease .2s both" }}>
                   <Stars rating={pick.rating} />
                   {pick.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 11, marginLeft: 4 }}>({pick.reviews} 則)</span>}
-                  <div style={{ marginTop: 4 }}>
-                    <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: "rgba(93,228,167,.1)", color: "var(--accent3)", border: "1px solid rgba(93,228,167,.2)" }}>
-                      {foodTypeEmoji(pick.foodType)} {pick.foodTypeLabel}
-                    </span>
-                  </div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 8, fontSize: 13, color: "var(--dim)", flexWrap: "wrap" }}>
                     <span>📍 {pick.dist}m</span>
                     <PriceTag level={pick.priceLevel} />
@@ -486,7 +543,7 @@ export default function App() {
         )}
       </section>
 
-      {/* Restaurant List */}
+      {/* ═══ Restaurant List ═══ */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px" }}>
         <h3 style={{ fontFamily: "var(--fd)", fontWeight: 600, fontSize: 16, color: "var(--dim)", marginBottom: 12 }}>
           附近餐廳 ({filtered.length})
@@ -494,7 +551,7 @@ export default function App() {
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {!busy && !filtered.length && (
             <div style={{ textAlign: "center", padding: 32, color: "var(--dim)", fontSize: 14, background: "var(--sf)", borderRadius: "var(--r)" }}>
-              沒有符合條件的餐廳 😢
+              {activeKeyword ? `找不到「${activeKeyword}」的相關餐廳，試試其他關鍵字？` : "沒有符合條件的餐廳 😢"}
             </div>
           )}
           {filtered.map((r, i) => (
@@ -505,12 +562,11 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 28, width: 52, height: 52, background: "var(--sf2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  {foodTypeEmoji(r.foodType)}
+                  {categoryEmoji(r.category)}
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
-                <div style={{ fontSize: 11, color: "var(--accent3)", marginTop: 1 }}>{r.foodTypeLabel}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
                   <Stars rating={r.rating} />
                   {r.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 10 }}>({r.reviews})</span>}
@@ -545,7 +601,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8 }}>
             {hist.map((h, i) => (
               <div key={i} style={{ flex: "0 0 auto", background: "var(--sf)", borderRadius: 12, padding: "10px 14px", textAlign: "center", minWidth: 80 }}>
-                <div style={{ fontSize: 24 }}>{foodTypeEmoji(h.foodType)}</div>
+                <div style={{ fontSize: 24 }}>{categoryEmoji(h.category)}</div>
                 <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2, whiteSpace: "nowrap" }}>{h.name}</div>
               </div>
             ))}
@@ -615,21 +671,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Food Type Tags */}
-            <div style={{ marginBottom: 24 }}>
-              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--dim)", margin: "0 0 10px", letterSpacing: 1 }}>食物類型</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {Object.entries(foodTypeLabelCounts)
-                  .sort((a, b) => b[1] - a[1])
-                  .map(([label, count]) => (
-                    <div key={label} style={{ padding: "7px 12px", borderRadius: 20, background: "var(--sf2)", fontSize: 12, color: "var(--dim)", display: "flex", alignItems: "center", gap: 4 }}>
-                      {label}
-                      <span style={{ background: "rgba(245,158,66,.2)", color: "var(--accent)", borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>{count}</span>
-                    </div>
-                  ))}
-              </div>
-            </div>
-
             {/* Reset */}
             <button onClick={() => { setBudgets([]); setMinRating(0); setOpenOnly(false); setShowFilter(false); }}
               style={{ width: "100%", padding: "14px", borderRadius: 14, border: "1.5px solid var(--sf2)", background: "transparent", color: "var(--dim)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
@@ -648,6 +689,7 @@ export default function App() {
         @keyframes tick{0%{transform:scale(.95)}100%{transform:scale(1)}}
         @keyframes slideUp{0%{transform:translateY(100%)}100%{transform:translateY(0)}}
         *::-webkit-scrollbar{height:0;width:0}
+        input::placeholder{color:var(--dim);opacity:.6}
       `}</style>
     </div>
   );

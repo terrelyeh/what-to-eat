@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  const { location, radius, type, language } = req.query;
+  const { location, radius, type, language, keyword } = req.query;
   const API_KEY = process.env.VITE_GOOGLE_MAPS_KEY;
 
   if (!API_KEY) {
@@ -22,6 +22,7 @@ export default async function handler(req, res) {
     key: API_KEY,
     language: language || 'zh-TW',
   });
+  if (keyword) params.set('keyword', keyword);
 
   try {
     const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?${params}`;
