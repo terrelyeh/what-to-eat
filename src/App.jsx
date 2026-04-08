@@ -5,16 +5,20 @@ const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
 const DAILY_LIMIT = 30;
 const STORAGE_KEY = "whatto_eat_daily";
 
-const CUISINES = [
-  { id: "all", label: "全部", emoji: "🍽️" },
-  { id: "japanese", label: "日式", emoji: "🍱" },
-  { id: "taiwanese", label: "台式", emoji: "🥢" },
-  { id: "american", label: "美式", emoji: "🍔" },
-  { id: "italian", label: "義式", emoji: "🍝" },
-  { id: "korean", label: "韓式", emoji: "🥘" },
-  { id: "chinese", label: "中式", emoji: "🥟" },
-  { id: "cafe", label: "咖啡", emoji: "☕" },
-  { id: "other", label: "其他", emoji: "🌏" },
+// Food-type based categories (not nationality)
+const FOOD_TYPES = [
+  { id: "all",      label: "全部",     emoji: "🍽️" },
+  { id: "rice",     label: "飯類",     emoji: "🍚" },
+  { id: "noodle",   label: "麵類",     emoji: "🍜" },
+  { id: "burger",   label: "漢堡",     emoji: "🍔" },
+  { id: "sushi",    label: "壽司/生魚", emoji: "🍣" },
+  { id: "bbq",      label: "燒烤",     emoji: "🥩" },
+  { id: "hotpot",   label: "鍋物",     emoji: "🍲" },
+  { id: "dumpling", label: "餃子/包子", emoji: "🥟" },
+  { id: "pizza",    label: "披薩",     emoji: "🍕" },
+  { id: "bread",    label: "麵包/甜點", emoji: "🍰" },
+  { id: "cafe",     label: "咖啡",     emoji: "☕" },
+  { id: "other",    label: "其他",     emoji: "🍴" },
 ];
 
 const DISTANCES = [
@@ -37,21 +41,58 @@ const RATINGS = [
   { label: "4.5+", value: 4.5 },
 ];
 
-// ─── Cuisine detection from Google Places types ───
-function detectCuisine(types, name) {
+// ─── Food type detection from name + Google Places types ───
+function detectFoodType(types, name) {
   const hay = [...(types || []), (name || "")].join(" ").toLowerCase();
-  if (/japanese|sushi|ramen|izakaya|tempura|udon|soba|donburi|yakitori|tonkatsu|日本|壽司|拉麵|居酒屋/.test(hay)) return "japanese";
-  if (/taiwanese|bubble.?tea|boba|滷肉|牛肉麵|台[式灣]|小吃/.test(hay)) return "taiwanese";
-  if (/chinese|dim.?sum|hot.?pot|szechuan|cantonese|dumpling|中[式華]|火鍋|點心/.test(hay)) return "chinese";
-  if (/korean|kimchi|bibimbap|韓[式國]/.test(hay)) return "korean";
-  if (/american|burger|hamburger|steak|steakhouse|grill|美式/.test(hay)) return "american";
-  if (/italian|pizza|pasta|trattoria|risotto|義[式大]/.test(hay)) return "italian";
-  if (/cafe|coffee|咖啡/.test(hay)) return "cafe";
+
+  // Rice dishes
+  if (/丼|どんぶり|donburi|curry|カレー|咖哩|咖喱|飯|rice|便當|bento|定食|燴飯|炒飯|fried rice|雞腿飯|排骨飯|魯肉飯|滷肉飯|燒臘/.test(hay)) return "rice";
+
+  // Noodles
+  if (/麵|拉麵|ramen|noodle|うどん|udon|soba|蕎麥|pasta|義大利麵|牛肉麵|擔仔|陽春|乾麵|炒麵|湯麵|米粉|河粉|粿條|pho|phở/.test(hay)) return "noodle";
+
+  // Burger
+  if (/burger|hamburger|漢堡|ハンバーガー/.test(hay)) return "burger";
+
+  // Sushi & raw fish
+  if (/sushi|壽司|すし|鮨|sashimi|刺身|生魚|海鮮丼/.test(hay)) return "sushi";
+
+  // BBQ & grill
+  if (/bbq|barbecue|grill|燒烤|烤肉|焼肉|燒鳥|yakitori|串燒|串烤|炭火|steakhouse|steak|牛排/.test(hay)) return "bbq";
+
+  // Hot pot & stew
+  if (/火鍋|hot.?pot|鍋物|涮涮|しゃぶ|shabu|sukiyaki|壽喜燒|麻辣鍋|鴛鴦|石頭鍋|薑母鴨|羊肉爐/.test(hay)) return "hotpot";
+
+  // Dumplings & buns
+  if (/餃子|dumpling|gyoza|包子|小籠|湯包|水餃|鍋貼|蒸餃|dim.?sum|點心/.test(hay)) return "dumpling";
+
+  // Pizza
+  if (/pizza|披薩|比薩|ピザ/.test(hay)) return "pizza";
+
+  // Bakery & dessert
+  if (/bakery|甜點|dessert|蛋糕|cake|pastry|麵包|bread|パン|甜品|鬆餅|waffle|pancake|donut|冰淇淋|ice.?cream|gelato/.test(hay)) return "bread";
+
+  // Cafe & coffee
+  if (/cafe|coffee|咖啡|カフェ|コーヒー|tea.?house|茶[館室]/.test(hay)) return "cafe";
+
   return "other";
 }
 
-function cuisineLabel(id) {
-  return CUISINES.find(c => c.id === id)?.label || "其他";
+function foodTypeLabel(id) {
+  return FOOD_TYPES.find(c => c.id === id)?.label || "其他";
+}
+
+function foodTypeEmoji(id) {
+  return FOOD_TYPES.find(c => c.id === id)?.emoji || "🍴";
+}
+
+// ─── Is the restaurant in Japan? (rough bounding box) ───
+function isInJapan(lat, lng) {
+  return lat >= 24 && lat <= 46 && lng >= 122 && lng <= 146;
+}
+
+function tabelogSearchUrl(name) {
+  return `https://tabelog.com/rstLst/?vs=1&sa=&sk=${encodeURIComponent(name)}`;
 }
 
 // ─── Rate limit helpers ───
@@ -88,8 +129,8 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function tabelogUrl(name) {
-  return `https://tabelog.com/rstLst/?vs=1&sa=&sk=${encodeURIComponent(name)}`;
+function gmapUrl(name, lat, lng) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}&center=${lat},${lng}`;
 }
 
 function photoSrc(ref, w = 120) {
@@ -126,7 +167,7 @@ export default function App() {
   const [left, setLeft] = useState(remaining());
 
   // Filter states
-  const [cuisine, setCuisine] = useState("all");
+  const [foodType, setFoodType] = useState("all");
   const [radius, setRadius] = useState(1000);
   const [budgets, setBudgets] = useState([]);
   const [minRating, setMinRating] = useState(0);
@@ -169,23 +210,25 @@ export default function App() {
 
       if (merged.length > 0) {
         setList(merged.map((p, i) => {
-          const cid = detectCuisine(p.types, p.name);
+          const ft = detectFoodType(p.types, p.name);
+          const pLat = p.geometry.location.lat;
+          const pLng = p.geometry.location.lng;
           return {
             id: p.place_id || i,
             name: p.name,
             rating: p.rating || 0,
             reviews: p.user_ratings_total || 0,
-            dist: Math.round(haversine(lat, lng, p.geometry.location.lat, p.geometry.location.lng)),
+            dist: Math.round(haversine(lat, lng, pLat, pLng)),
             priceLevel: p.price_level || 0,
             address: p.vicinity || "",
             open: p.opening_hours?.open_now,
             openTxt: p.opening_hours ? (p.opening_hours.open_now ? "✅ 營業中" : "❌ 休息中") : "—",
             photo: p.photos?.[0]?.photo_reference || null,
-            lat: p.geometry.location.lat,
-            lng: p.geometry.location.lng,
-            cuisine: cid,
-            cuisineLabel: cuisineLabel(cid),
-            tabelogUrl: tabelogUrl(p.name),
+            lat: pLat,
+            lng: pLng,
+            foodType: ft,
+            foodTypeLabel: foodTypeLabel(ft),
+            inJapan: isInJapan(pLat, pLng),
           };
         }));
         bumpRateLimit();
@@ -228,29 +271,29 @@ export default function App() {
 
   useEffect(() => { locate(); }, [locate]);
 
-  // ─── Filtering (client side on already-fetched results) ───
+  // ─── Filtering ───
   const filtered = useMemo(() => {
     return list.filter(r => {
       if (r.dist > radius) return false;
-      if (cuisine !== "all" && r.cuisine !== cuisine) return false;
+      if (foodType !== "all" && r.foodType !== foodType) return false;
       if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
       if (minRating > 0 && r.rating < minRating) return false;
       if (openOnly && !r.open) return false;
       return true;
     }).sort((a, b) => a.dist - b.dist);
-  }, [list, radius, cuisine, budgets, minRating, openOnly]);
+  }, [list, radius, foodType, budgets, minRating, openOnly]);
 
-  // cuisine counts (within distance)
-  const cuisineCounts = useMemo(() => {
+  // food type counts (within distance)
+  const foodTypeCounts = useMemo(() => {
     const counts = {};
     list.filter(r => r.dist <= radius).forEach(r => {
-      counts[r.cuisine] = (counts[r.cuisine] || 0) + 1;
+      counts[r.foodType] = (counts[r.foodType] || 0) + 1;
     });
     return counts;
   }, [list, radius]);
 
-  // cuisine label counts for filter panel
-  const cuisineLabelCounts = useMemo(() => {
+  // food type label counts for filter panel
+  const foodTypeLabelCounts = useMemo(() => {
     const counts = {};
     list
       .filter(r => {
@@ -260,7 +303,7 @@ export default function App() {
         if (openOnly && !r.open) return false;
         return true;
       })
-      .forEach(r => { counts[r.cuisineLabel] = (counts[r.cuisineLabel] || 0) + 1; });
+      .forEach(r => { counts[r.foodTypeLabel] = (counts[r.foodTypeLabel] || 0) + 1; });
     return counts;
   }, [list, radius, budgets, minRating, openOnly]);
 
@@ -325,14 +368,15 @@ export default function App() {
       {/* Loading */}
       {busy && <div style={{ textAlign: "center", padding: 24, color: "var(--dim)" }}><span style={{ fontSize: 28, display: "inline-block", animation: "spin 1s linear infinite" }}>🔍</span><p style={{ margin: "8px 0 0", fontSize: 14 }}>搜尋附近餐廳中...</p></div>}
 
-      {/* Cuisine Tabs */}
+      {/* Food Type Tabs */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 10 }}>
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, scrollbarWidth: "none" }}>
-          {CUISINES.map(c => {
-            const on = cuisine === c.id;
-            const count = c.id === "all" ? list.filter(r => r.dist <= radius).length : (cuisineCounts[c.id] || 0);
+          {FOOD_TYPES.map(c => {
+            const on = foodType === c.id;
+            const count = c.id === "all" ? list.filter(r => r.dist <= radius).length : (foodTypeCounts[c.id] || 0);
+            if (c.id !== "all" && count === 0) return null;
             return (
-              <button key={c.id} onClick={() => { setCuisine(c.id); setPick(null); setDone(false); }}
+              <button key={c.id} onClick={() => { setFoodType(c.id); setPick(null); setDone(false); }}
                 style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", borderRadius: 40, border: on ? "2px solid var(--accent)" : "2px solid transparent", background: on ? "rgba(245,158,66,.15)" : "var(--sf)", color: on ? "var(--accent)" : "var(--dim)", fontFamily: "var(--fb)", fontWeight: 600, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap", transition: "all .2s" }}>
                 <span style={{ fontSize: 15 }}>{c.emoji}</span>{c.label}
                 {count > 0 && <span style={{ fontSize: 10, opacity: 0.7, background: on ? "rgba(245,158,66,.2)" : "var(--sf2)", borderRadius: 10, padding: "1px 5px" }}>{count}</span>}
@@ -392,7 +436,7 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 48, marginBottom: 8, filter: spinning ? "blur(1px)" : "none" }}>
-                  {CUISINES.find(c => c.id === pick.cuisine)?.emoji || "🍴"}
+                  {foodTypeEmoji(pick.foodType)}
                 </div>
               )}
               <h2 style={{ fontFamily: "var(--fd)", fontWeight: 700, fontSize: done ? 22 : 20, margin: "0 0 4px", color: done ? "var(--accent)" : "var(--tx)" }}>{pick.name}</h2>
@@ -402,7 +446,7 @@ export default function App() {
                   {pick.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 11, marginLeft: 4 }}>({pick.reviews} 則)</span>}
                   <div style={{ marginTop: 4 }}>
                     <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: "rgba(93,228,167,.1)", color: "var(--accent3)", border: "1px solid rgba(93,228,167,.2)" }}>
-                      {CUISINES.find(c => c.id === pick.cuisine)?.emoji} {pick.cuisineLabel}
+                      {foodTypeEmoji(pick.foodType)} {pick.foodTypeLabel}
                     </span>
                   </div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 8, fontSize: 13, color: "var(--dim)", flexWrap: "wrap" }}>
@@ -411,10 +455,18 @@ export default function App() {
                     <span>{pick.openTxt}</span>
                   </div>
                   <p style={{ fontSize: 12, color: "var(--dim)", margin: "6px 0 10px" }}>{pick.address}</p>
-                  <a href={pick.tabelogUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ display: "inline-block", padding: "9px 24px", borderRadius: 24, background: "rgba(232,73,27,.2)", border: "1.5px solid var(--tab)", color: "var(--tab)", fontSize: 14, fontWeight: 700, textDecoration: "none" }}>
-                    🔍 查看食べログ
-                  </a>
+                  <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                    <a href={gmapUrl(pick.name, pick.lat, pick.lng)} target="_blank" rel="noopener noreferrer"
+                      style={{ display: "inline-block", padding: "9px 20px", borderRadius: 24, background: "rgba(93,228,167,.15)", border: "1.5px solid var(--accent3)", color: "var(--accent3)", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                      🗺️ Google Maps
+                    </a>
+                    {pick.inJapan && (
+                      <a href={tabelogSearchUrl(pick.name)} target="_blank" rel="noopener noreferrer"
+                        style={{ display: "inline-block", padding: "9px 20px", borderRadius: 24, background: "rgba(232,73,27,.2)", border: "1.5px solid var(--tab)", color: "var(--tab)", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                        🔍 搜尋食べログ
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -451,12 +503,12 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 28, width: 52, height: 52, background: "var(--sf2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  {CUISINES.find(c => c.id === r.cuisine)?.emoji || "🍴"}
+                  {foodTypeEmoji(r.foodType)}
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</div>
-                <div style={{ fontSize: 11, color: "var(--accent3)", marginTop: 1 }}>{r.cuisineLabel}</div>
+                <div style={{ fontSize: 11, color: "var(--accent3)", marginTop: 1 }}>{r.foodTypeLabel}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
                   <Stars rating={r.rating} />
                   {r.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 10 }}>({r.reviews})</span>}
@@ -467,10 +519,18 @@ export default function App() {
                   <span>{r.openTxt}</span>
                 </div>
               </div>
-              <a href={r.tabelogUrl} target="_blank" rel="noopener noreferrer"
-                style={{ padding: "6px 10px", borderRadius: 10, fontSize: 11, fontWeight: 700, background: "rgba(232,73,27,.15)", color: "var(--tab)", textDecoration: "none", textAlign: "center", flexShrink: 0, border: "1px solid rgba(232,73,27,.3)" }}>
-                食べログ
-              </a>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+                <a href={gmapUrl(r.name, r.lat, r.lng)} target="_blank" rel="noopener noreferrer"
+                  style={{ padding: "4px 8px", borderRadius: 8, fontSize: 10, fontWeight: 600, background: "rgba(93,228,167,.12)", color: "var(--accent3)", textDecoration: "none", textAlign: "center" }}>
+                  地圖
+                </a>
+                {r.inJapan && (
+                  <a href={tabelogSearchUrl(r.name)} target="_blank" rel="noopener noreferrer"
+                    style={{ padding: "4px 8px", borderRadius: 8, fontSize: 10, fontWeight: 600, background: "rgba(232,73,27,.12)", color: "var(--tab)", textDecoration: "none", textAlign: "center" }}>
+                    食べログ
+                  </a>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -483,7 +543,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8 }}>
             {hist.map((h, i) => (
               <div key={i} style={{ flex: "0 0 auto", background: "var(--sf)", borderRadius: 12, padding: "10px 14px", textAlign: "center", minWidth: 80 }}>
-                <div style={{ fontSize: 24 }}>{CUISINES.find(c => c.id === h.cuisine)?.emoji || "🍴"}</div>
+                <div style={{ fontSize: 24 }}>{foodTypeEmoji(h.foodType)}</div>
                 <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2, whiteSpace: "nowrap" }}>{h.name}</div>
               </div>
             ))}
@@ -492,7 +552,7 @@ export default function App() {
       )}
 
       <footer style={{ textAlign: "center", padding: "32px 16px 0", fontSize: 11, color: "var(--dim)", position: "relative", zIndex: 1, opacity: .5 }}>
-        Powered by Google Places API・食べログ連結為站外搜尋
+        Powered by Google Places API{loc && isInJapan(loc.lat, loc.lng) ? "・日本地區可搜尋食べログ" : ""}
       </footer>
 
       {/* ─── Filter Panel (Bottom Sheet) ─── */}
@@ -553,11 +613,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* Cuisine Type Tags */}
+            {/* Food Type Tags */}
             <div style={{ marginBottom: 24 }}>
-              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--dim)", margin: "0 0 10px", letterSpacing: 1 }}>料理類型</p>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--dim)", margin: "0 0 10px", letterSpacing: 1 }}>食物類型</p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {Object.entries(cuisineLabelCounts)
+                {Object.entries(foodTypeLabelCounts)
                   .sort((a, b) => b[1] - a[1])
                   .map(([label, count]) => (
                     <div key={label} style={{ padding: "7px 12px", borderRadius: 20, background: "var(--sf2)", fontSize: 12, color: "var(--dim)", display: "flex", alignItems: "center", gap: 4 }}>
