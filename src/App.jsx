@@ -5,18 +5,14 @@ const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
 const DAILY_LIMIT = 30;
 const STORAGE_KEY = "whatto_eat_daily";
 
-const KEYWORD_SUGGESTIONS = ["拉麵", "漢堡", "咖哩", "壽司", "火鍋", "披薩", "牛排", "早午餐", "素食", "甜點", "咖啡", "麵包", "便當", "炸雞"];
+const FOOD_TYPES = ["restaurant", "cafe", "bakery", "meal_takeaway"];
+
+const KEYWORD_SUGGESTIONS = ["拉麵", "麵店", "漢堡", "咖哩", "壽司", "火鍋", "披薩", "牛排", "早午餐", "素食", "甜點", "咖啡", "麵包", "便當", "炸雞", "燒肉", "小吃"];
 
 const DISTANCES = [
   { label: "500m", value: 500 },
   { label: "1km", value: 1000 },
   { label: "2km", value: 2000 },
-];
-
-const BUDGETS = [
-  { label: "便宜", value: 1, symbol: "$" },
-  { label: "適中", value: 2, symbol: "$$" },
-  { label: "偏貴", value: 3, symbol: "$$$" },
 ];
 
 const RATINGS = [
@@ -93,15 +89,6 @@ function Stars({ rating }) {
   );
 }
 
-function PriceTag({ level }) {
-  if (!level) return <span style={{ color: "var(--dim)" }}>—</span>;
-  return (
-    <span style={{ color: "var(--accent3)", fontSize: 12 }}>
-      {"$".repeat(level)}<span style={{ opacity: 0.3 }}>{"$".repeat(4 - level)}</span>
-    </span>
-  );
-}
-
 // ═══════════════════════════ APP ═══════════════════════════
 export default function App() {
   const [loc, setLoc] = useState(null);
@@ -115,7 +102,6 @@ export default function App() {
   const [keyword, setKeyword] = useState("");
   const [activeKeyword, setActiveKeyword] = useState("");
   const [radius, setRadius] = useState(1000);
-  const [budgets, setBudgets] = useState([]);
   const [minRating, setMinRating] = useState(0);
   const [openOnly, setOpenOnly] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
@@ -135,20 +121,37 @@ export default function App() {
     setPick(null); setDone(false);
 
     try {
-      const qs = new URLSearchParams({
-        location: `${lat},${lng}`,
-        radius: "2000",
-        type: "restaurant",
-        language: navigator.language || "zh-TW",
-      });
+      const lang = navigator.language || "zh-TW";
+      let fetches;
+
       if (keywordStr) {
-        qs.set("keyword", keywordStr);
+        // Keyword search: single API call, no type restriction for broadest results
+        const qs = new URLSearchParams({ location: `${lat},${lng}`, radius: "2000", keyword: keywordStr, language: lang });
+        fetches = [fetch(`/api/places?${qs}`).then(r => r.json())];
+      } else {
+        // No keyword: query all food-related types to get maximum coverage
+        fetches = FOOD_TYPES.map(type => {
+          const qs = new URLSearchParams({ location: `${lat},${lng}`, radius: "2000", type, language: lang });
+          return fetch(`/api/places?${qs}`).then(r => r.json());
+        });
       }
 
-      const data = await fetch(`/api/places?${qs}`).then(r => r.json());
+      const responses = await Promise.all(fetches);
+      const seen = new Set();
+      const merged = [];
+      for (const d of responses) {
+        if (d.status === "OK" && d.results) {
+          for (const p of d.results) {
+            if (!seen.has(p.place_id)) {
+              seen.add(p.place_id);
+              merged.push(p);
+            }
+          }
+        }
+      }
 
-      if (data.status === "OK" && data.results?.length > 0) {
-        setList(data.results.map((p, i) => {
+      if (merged.length > 0) {
+        setList(merged.map((p, i) => {
           const pLat = p.geometry.location.lat;
           const pLng = p.geometry.location.lng;
           return {
@@ -168,11 +171,12 @@ export default function App() {
             inJapan: isInJapan(pLat, pLng),
           };
         }));
-      } else if (data.status === "ZERO_RESULTS" || (data.status === "OK" && !data.results?.length)) {
+      } else if (responses.every(d => d.status === "ZERO_RESULTS" || d.status === "OK")) {
         setList([]);
         setLocErr(keywordStr ? `找不到「${keywordStr}」的相關餐廳` : "附近找不到餐廳");
       } else {
-        setLocErr(`API 錯誤：${data.status || "UNKNOWN"}`);
+        const bad = responses.find(d => d.status !== "OK" && d.status !== "ZERO_RESULTS");
+        setLocErr(`API 錯誤：${bad?.status || "UNKNOWN"}`);
       }
 
       bumpRateLimit();
@@ -231,15 +235,14 @@ export default function App() {
   const filtered = useMemo(() => {
     return list.filter(r => {
       if (r.dist > radius) return false;
-      if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
       if (minRating > 0 && r.rating < minRating) return false;
       if (openOnly && !r.open) return false;
       return true;
     }).sort((a, b) => a.dist - b.dist);
-  }, [list, radius, budgets, minRating, openOnly]);
+  }, [list, radius, minRating, openOnly]);
 
   // active filter count
-  const activeFilters = (budgets.length > 0 ? 1 : 0) + (minRating > 0 ? 1 : 0) + (openOnly ? 1 : 0);
+  const activeFilters = (minRating > 0 ? 1 : 0) + (openOnly ? 1 : 0);
 
   // ─── Spin ───
   const spin = () => {
@@ -262,10 +265,6 @@ export default function App() {
       }
     };
     go();
-  };
-
-  const toggleBudget = (v) => {
-    setBudgets(prev => prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]);
   };
 
   const css = {
@@ -437,7 +436,6 @@ export default function App() {
                   {pick.reviews > 0 && <span style={{ color: "var(--dim)", fontSize: 11, marginLeft: 4 }}>({pick.reviews} 則)</span>}
                   <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 8, fontSize: 13, color: "var(--dim)", flexWrap: "wrap" }}>
                     <span>📍 {pick.dist}m</span>
-                    <PriceTag level={pick.priceLevel} />
                     <span>{pick.openTxt}</span>
                   </div>
                   <p style={{ fontSize: 12, color: "var(--dim)", margin: "6px 0 10px" }}>{pick.address}</p>
@@ -500,7 +498,6 @@ export default function App() {
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 3, fontSize: 11, color: "var(--dim)", alignItems: "center" }}>
                   <span>{r.dist}m</span>
-                  <PriceTag level={r.priceLevel} />
                   <span>{r.openTxt}</span>
                 </div>
               </div>
@@ -551,23 +548,6 @@ export default function App() {
               <button onClick={() => setShowFilter(false)} style={{ background: "var(--sf2)", border: "none", color: "var(--dim)", fontSize: 18, width: 32, height: 32, borderRadius: "50%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
             </div>
 
-            {/* Budget */}
-            <div style={{ marginBottom: 24 }}>
-              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--dim)", margin: "0 0 10px", letterSpacing: 1 }}>預算</p>
-              <div style={{ display: "flex", gap: 8 }}>
-                {BUDGETS.map(b => {
-                  const on = budgets.includes(b.value);
-                  return (
-                    <button key={b.value} onClick={() => toggleBudget(b.value)}
-                      style={{ flex: 1, padding: "10px 0", borderRadius: 12, border: on ? "2px solid var(--accent)" : "2px solid var(--sf2)", background: on ? "rgba(245,158,66,.15)" : "transparent", color: on ? "var(--accent)" : "var(--dim)", fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all .15s" }}>
-                      <div>{b.label}</div>
-                      <div style={{ fontSize: 10, opacity: 0.7 }}>{b.symbol}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
             {/* Min Rating */}
             <div style={{ marginBottom: 24 }}>
               <p style={{ fontSize: 13, fontWeight: 700, color: "var(--dim)", margin: "0 0 10px", letterSpacing: 1 }}>最低評分</p>
@@ -599,7 +579,7 @@ export default function App() {
             </div>
 
             {/* Reset */}
-            <button onClick={() => { setBudgets([]); setMinRating(0); setOpenOnly(false); setShowFilter(false); }}
+            <button onClick={() => { setMinRating(0); setOpenOnly(false); setShowFilter(false); }}
               style={{ width: "100%", padding: "14px", borderRadius: 14, border: "1.5px solid var(--sf2)", background: "transparent", color: "var(--dim)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
               🔄 重設篩選條件
             </button>
