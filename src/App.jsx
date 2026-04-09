@@ -5,14 +5,7 @@ const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY || "";
 const DAILY_LIMIT = 30;
 const STORAGE_KEY = "whatto_eat_daily";
 
-const CATEGORY_TABS = [
-  { id: "all",        label: "全部",     emoji: "🍽️", types: ["restaurant", "cafe", "bakery"] },
-  { id: "restaurant", label: "餐廳",     emoji: "🍴", types: ["restaurant"] },
-  { id: "cafe",       label: "咖啡廳",   emoji: "☕", types: ["cafe"] },
-  { id: "bakery",     label: "甜點麵包", emoji: "🍰", types: ["bakery"] },
-];
-
-const KEYWORD_SUGGESTIONS = ["拉麵", "漢堡", "咖哩", "壽司", "火鍋", "披薩", "牛排", "早午餐", "素食", "甜點"];
+const KEYWORD_SUGGESTIONS = ["拉麵", "漢堡", "咖哩", "壽司", "火鍋", "披薩", "牛排", "早午餐", "素食", "甜點", "咖啡", "麵包", "便當", "炸雞"];
 
 const DISTANCES = [
   { label: "500m", value: 500 },
@@ -83,14 +76,10 @@ function photoSrc(ref, w = 120) {
   return ref ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${w}&photoreference=${ref}&key=${API_KEY}` : null;
 }
 
-function deriveCategoryFromTypes(googleTypes) {
-  if (googleTypes?.includes("bakery")) return "bakery";
-  if (googleTypes?.includes("cafe")) return "cafe";
-  return "restaurant";
-}
-
-function categoryEmoji(catId) {
-  return CATEGORY_TABS.find(c => c.id === catId)?.emoji || "🍴";
+function placeEmoji(googleTypes) {
+  if (googleTypes?.includes("bakery")) return "🍰";
+  if (googleTypes?.includes("cafe")) return "☕";
+  return "🍴";
 }
 
 function Stars({ rating }) {
@@ -125,7 +114,6 @@ export default function App() {
   // Search & filter states
   const [keyword, setKeyword] = useState("");
   const [activeKeyword, setActiveKeyword] = useState("");
-  const [category, setCategory] = useState("all");
   const [radius, setRadius] = useState(1000);
   const [budgets, setBudgets] = useState([]);
   const [minRating, setMinRating] = useState(0);
@@ -141,60 +129,28 @@ export default function App() {
   const inputRef = useRef(null);
 
   // ─── Google Places Nearby Search ───
-  const search = useCallback(async (lat, lng, categoryId = "all", keywordStr = "") => {
+  const search = useCallback(async (lat, lng, keywordStr = "") => {
     if (!canSearch()) { setLocErr(`今日搜尋已達 ${DAILY_LIMIT} 次上限`); return; }
     setBusy(true); setLocErr("");
     setPick(null); setDone(false);
 
-    const tab = CATEGORY_TABS.find(t => t.id === categoryId) || CATEGORY_TABS[0];
-
     try {
-      let fetches;
+      const qs = new URLSearchParams({
+        location: `${lat},${lng}`,
+        radius: "2000",
+        type: "restaurant",
+        language: navigator.language || "zh-TW",
+      });
       if (keywordStr) {
-        // Keyword search: single API call
-        const qs = new URLSearchParams({
-          location: `${lat},${lng}`,
-          radius: "2000",
-          keyword: keywordStr,
-          language: navigator.language || "zh-TW",
-        });
-        if (categoryId !== "all") {
-          qs.set("type", tab.types[0]);
-        }
-        fetches = [fetch(`/api/places?${qs}`).then(r => r.json())];
-      } else {
-        // No keyword: query each type in the category
-        fetches = tab.types.map(type => {
-          const qs = new URLSearchParams({
-            location: `${lat},${lng}`,
-            radius: "2000",
-            type,
-            language: navigator.language || "zh-TW",
-          });
-          return fetch(`/api/places?${qs}`).then(r => r.json());
-        });
+        qs.set("keyword", keywordStr);
       }
 
-      const responses = await Promise.all(fetches);
+      const data = await fetch(`/api/places?${qs}`).then(r => r.json());
 
-      const seen = new Set();
-      const merged = [];
-      for (const d of responses) {
-        if (d.status === "OK" && d.results) {
-          for (const p of d.results) {
-            if (!seen.has(p.place_id)) {
-              seen.add(p.place_id);
-              merged.push(p);
-            }
-          }
-        }
-      }
-
-      if (merged.length > 0) {
-        setList(merged.map((p, i) => {
+      if (data.status === "OK" && data.results?.length > 0) {
+        setList(data.results.map((p, i) => {
           const pLat = p.geometry.location.lat;
           const pLng = p.geometry.location.lng;
-          const cat = deriveCategoryFromTypes(p.types);
           return {
             id: p.place_id || i,
             name: p.name,
@@ -208,20 +164,15 @@ export default function App() {
             photo: p.photos?.[0]?.photo_reference || null,
             lat: pLat,
             lng: pLng,
-            category: cat,
+            emoji: placeEmoji(p.types),
             inJapan: isInJapan(pLat, pLng),
           };
         }));
-      } else if (responses.every(d => d.status === "ZERO_RESULTS" || d.status === "OK")) {
+      } else if (data.status === "ZERO_RESULTS" || (data.status === "OK" && !data.results?.length)) {
         setList([]);
-        if (keywordStr) {
-          setLocErr(`找不到「${keywordStr}」的相關餐廳`);
-        } else {
-          setLocErr("附近找不到餐廳");
-        }
+        setLocErr(keywordStr ? `找不到「${keywordStr}」的相關餐廳` : "附近找不到餐廳");
       } else {
-        const bad = responses.find(d => d.status !== "OK" && d.status !== "ZERO_RESULTS");
-        setLocErr(`API 錯誤：${bad?.status || "UNKNOWN"}`);
+        setLocErr(`API 錯誤：${data.status || "UNKNOWN"}`);
       }
 
       bumpRateLimit();
@@ -245,7 +196,7 @@ export default function App() {
         const c = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setLoc(c);
         setLocBusy(false);
-        search(c.lat, c.lng, "all", "");
+        search(c.lat, c.lng, "");
       },
       () => {
         setLocBusy(false);
@@ -263,37 +214,29 @@ export default function App() {
     setActiveKeyword(trimmed);
     setKeyword(trimmed);
     if (loc) {
-      search(loc.lat, loc.lng, category, trimmed);
+      search(loc.lat, loc.lng, trimmed);
     }
     inputRef.current?.blur();
-  }, [loc, category, search]);
+  }, [loc, search]);
 
   const handleClearKeyword = useCallback(() => {
     setActiveKeyword("");
     setKeyword("");
     if (loc) {
-      search(loc.lat, loc.lng, category, "");
+      search(loc.lat, loc.lng, "");
     }
-  }, [loc, category, search]);
-
-  const handleCategoryChange = useCallback((catId) => {
-    setCategory(catId);
-    if (loc) {
-      search(loc.lat, loc.lng, catId, activeKeyword);
-    }
-  }, [loc, activeKeyword, search]);
+  }, [loc, search]);
 
   // ─── Filtering (local, on already-fetched results) ───
   const filtered = useMemo(() => {
     return list.filter(r => {
       if (r.dist > radius) return false;
-      if (category !== "all" && r.category !== category) return false;
       if (budgets.length > 0 && r.priceLevel > 0 && !budgets.includes(r.priceLevel)) return false;
       if (minRating > 0 && r.rating < minRating) return false;
       if (openOnly && !r.open) return false;
       return true;
     }).sort((a, b) => a.dist - b.dist);
-  }, [list, radius, category, budgets, minRating, openOnly]);
+  }, [list, radius, budgets, minRating, openOnly]);
 
   // active filter count
   const activeFilters = (budgets.length > 0 ? 1 : 0) + (minRating > 0 ? 1 : 0) + (openOnly ? 1 : 0);
@@ -434,22 +377,6 @@ export default function App() {
         </div>
       </section>
 
-      {/* ═══ Category Tabs ═══ */}
-      <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 10 }}>
-        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, scrollbarWidth: "none" }}>
-          {CATEGORY_TABS.map(c => {
-            const on = category === c.id;
-            return (
-              <button key={c.id} onClick={() => handleCategoryChange(c.id)}
-                disabled={busy}
-                style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", borderRadius: 40, border: on ? "2px solid var(--accent)" : "2px solid transparent", background: on ? "rgba(245,158,66,.15)" : "var(--sf)", color: on ? "var(--accent)" : "var(--dim)", fontFamily: "var(--fb)", fontWeight: 600, fontSize: 13, cursor: busy ? "not-allowed" : "pointer", whiteSpace: "nowrap", opacity: busy ? .5 : 1, transition: "all .2s" }}>
-                <span style={{ fontSize: 15 }}>{c.emoji}</span>{c.label}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
       {/* ═══ Distance + Filter Row ═══ */}
       <section style={{ position: "relative", zIndex: 1, padding: "0 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ display: "flex", gap: 6, flex: 1 }}>
@@ -500,7 +427,7 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 48, marginBottom: 8, filter: spinning ? "blur(1px)" : "none" }}>
-                  {categoryEmoji(pick.category)}
+                  {pick.emoji}
                 </div>
               )}
               <h2 style={{ fontFamily: "var(--fd)", fontWeight: 700, fontSize: done ? 22 : 20, margin: "0 0 4px", color: done ? "var(--accent)" : "var(--tx)" }}>{pick.name}</h2>
@@ -562,7 +489,7 @@ export default function App() {
                 </div>
               ) : (
                 <div style={{ fontSize: 28, width: 52, height: 52, background: "var(--sf2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  {categoryEmoji(r.category)}
+                  {r.emoji}
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -601,7 +528,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8 }}>
             {hist.map((h, i) => (
               <div key={i} style={{ flex: "0 0 auto", background: "var(--sf)", borderRadius: 12, padding: "10px 14px", textAlign: "center", minWidth: 80 }}>
-                <div style={{ fontSize: 24 }}>{categoryEmoji(h.category)}</div>
+                <div style={{ fontSize: 24 }}>{h.emoji}</div>
                 <div style={{ fontSize: 11, fontWeight: 600, marginTop: 2, whiteSpace: "nowrap" }}>{h.name}</div>
               </div>
             ))}
