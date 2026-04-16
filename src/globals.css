@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* ─── Design Tokens ─── */
+:root {
+  --color-bg: #1a1714;
+  --color-surface: #262220;
+  --color-surface-2: #312e2a;
+  --color-accent: #f59e42;
+  --color-accent-2: #ff6b6b;
+  --color-accent-3: #5de4a7;
+  --color-text: #f5f0e8;
+  --color-dim: #9c9488;
+  --color-tabelog: #e8491b;
+  --radius: 18px;
+  --font-display: 'Fredoka', 'Noto Sans TC', sans-serif;
+  --font-body: 'Noto Sans TC', 'DM Sans', sans-serif;
+}
+
+/* ─── Base ─── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}
+
+*::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+input::placeholder {
+  color: var(--color-dim);
+  opacity: 0.6;
+}
+
+/* ─── Animations ─── */
+@keyframes wobble {
+  0%, 100% { transform: rotate(-6deg) scale(1); }
+  50% { transform: rotate(6deg) scale(1.05); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes popIn {
+  0% { transform: scale(0.5); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes fadeUp {
+  0% { transform: translateY(12px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes confetti {
+  0% { transform: translateY(0) rotate(0); opacity: 0.9; }
+  100% { transform: translateY(180px) rotate(720deg); opacity: 0; }
+}
+
+@keyframes tick {
+  0% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+@keyframes slideUp {
+  0% { transform: translateY(100%); }
+  100% { transform: translateY(0); }
+}
